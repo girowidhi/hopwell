@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 // Rate limiting configuration
 const RESEND_WINDOW_MINUTES = 60;
 const MAX_RESEND_REQUESTS = 3;
-const RESEND_COOLDOWN_SECONDS = 60;
+const RESEND_COOLDOWN_SECONDS = 180; // 3 minutes
 
 export async function POST(request: NextRequest) {
   try {

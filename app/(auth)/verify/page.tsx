@@ -147,7 +147,7 @@ export default function VerifyPage() {
         throw new Error(error.message || "Failed to resend code");
       }
 
-      setCountdown(60);
+      setCountdown(180); // 3 minutes
       setCanResend(false);
 
       toast({

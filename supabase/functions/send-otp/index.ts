@@ -6,7 +6,7 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL");
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
 // OTP expiry time in minutes
-const OTP_EXPIRY_MINUTES = 10;
+const OTP_EXPIRY_MINUTES = 3;
 // Maximum OTP attempts before requiring resend
 const MAX_OTP_ATTEMPTS = 5;
 
@@ -152,7 +152,7 @@ serve(async (req) => {
                   </div>
                   
                   <p style="color: #666666; font-size: 14px; margin: 0 0 20px 0;">
-                    This code will expire in <strong>${OTP_EXPIRY_MINUTES} minutes</strong>.
+                    This code will expire in <strong>3 minutes</strong>.
                   </p>
                   
                   <p style="color: #999999; font-size: 12px; margin: 0; text-align: center;">

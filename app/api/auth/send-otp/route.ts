@@ -6,8 +6,8 @@ import { otpStore, generateOTP, getExpiryTime } from "@/lib/otp-store";
 // Rate limiting configuration
 const RESEND_WINDOW_MINUTES = 60;
 const MAX_RESEND_REQUESTS = 5;
-const RESEND_COOLDOWN_SECONDS = 60;
-const OTP_EXPIRY_MINUTES = 10;
+const RESEND_COOLDOWN_SECONDS = 180; // 3 minutes
+const OTP_EXPIRY_MINUTES = 3; // 3 minutes for OTP to expire
 
 // In-memory rate limiting (for development)
 const rateLimitMap = new Map<string, { count: number; firstRequest: number }>();
@@ -138,7 +138,7 @@ export async function POST(request: NextRequest) {
                 </div>
                 
                 <p style="color: #666666; font-size: 14px; margin: 0 0 20px 0;">
-                  This code will expire in <strong>${OTP_EXPIRY_MINUTES} minutes</strong>.
+                  This code will expire in <strong>3 minutes</strong>.
                 </p>
                 
                 <p style="color: #999999; font-size: 12px; margin: 0; text-align: center;">
