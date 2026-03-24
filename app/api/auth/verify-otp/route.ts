@@ -114,6 +114,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Normalize email to lowercase for consistent lookup
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log("Verify request - email:", normalizedEmail, "OTP:", otp);
+
     const supabase = await createClient();
 
     // Check rate limiting (in-memory for development)
@@ -152,11 +156,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Try to validate OTP - first check memory, then database
-    let validationResult = await validateOTPFromMemory(email, otp);
+    let validationResult = await validateOTPFromMemory(normalizedEmail, otp);
     
     // If not found in memory, check database
     if (!validationResult.valid && validationResult.source === null) {
-      validationResult = await validateOTPFromDatabase(supabase, email, otp);
+      validationResult = await validateOTPFromDatabase(supabase, normalizedEmail, otp);
     }
 
     // Handle validation failure

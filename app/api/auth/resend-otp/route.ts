@@ -17,6 +17,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log("Resend OTP for:", normalizedEmail);
+
     const supabase = await createClient();
 
     // Check rate limiting for resend requests

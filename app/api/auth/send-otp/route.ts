@@ -23,9 +23,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Normalize email to lowercase
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log("Sending OTP to:", normalizedEmail);
+
     // Check rate limiting (in-memory for development)
     const now = Date.now();
-    const rateLimitKey = `${email}:${otpType}`;
+    const rateLimitKey = `${normalizedEmail}:${otpType}`;
     const existingLimit = rateLimitMap.get(rateLimitKey);
 
     if (existingLimit) {
@@ -67,13 +71,14 @@ export async function POST(request: NextRequest) {
     const expiresAt = getExpiryTime();
 
     // Store OTP in memory (for quick access)
-    otpStore.set(email, { 
+    otpStore.set(normalizedEmail, { 
       otp, 
       expiresAt, 
       verified: false,
-      email,
+      email: normalizedEmail,
       createdAt: Date.now()
     });
+    console.log("OTP stored in memory for:", normalizedEmail, "OTP:", otp);
 
     // Also store in database for persistence
     const supabase = await createClient();
@@ -82,7 +87,7 @@ export async function POST(request: NextRequest) {
     await supabase
       .from("verification_otp")
       .update({ verified_at: new Date().toISOString() })
-      .eq("email", email)
+      .eq("email", normalizedEmail)
       .eq("otp_type", otpType)
       .is("verified_at", null);
 
@@ -91,7 +96,7 @@ export async function POST(request: NextRequest) {
       .from("verification_otp")
       .insert({
         user_id: userId || null,
-        email: email,
+        email: normalizedEmail,
         otp_code: otp,
         otp_type: otpType,
         expires_at: expiresAt,
@@ -102,7 +107,7 @@ export async function POST(request: NextRequest) {
       console.error("Failed to store OTP in database:", dbError);
       // Continue anyway - we still have the OTP in memory
     } else {
-      console.log("OTP stored in database for:", email, "OTP:", otp);
+      console.log("OTP stored in database for:", normalizedEmail, "OTP:", otp);
     }
 
     // Send email using Resend
