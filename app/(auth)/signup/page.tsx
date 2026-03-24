@@ -230,10 +230,10 @@ export default function SignUpPage() {
         throw error;
       }
 
-      // Store user info in localStorage
+      // Store user info in localStorage (normalize email to lowercase)
       localStorage.setItem("pendingSignup", JSON.stringify({
         userId: data.user?.id,
-        email: formData.email,
+        email: formData.email.toLowerCase().trim(),
         firstName: formData.firstName,
         lastName: formData.lastName,
         phone: formData.phone,
