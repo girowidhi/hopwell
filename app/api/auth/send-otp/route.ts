@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
+import { createClient } from "@/lib/supabase/server";
 import { otpStore, generateOTP, getExpiryTime } from "@/lib/otp-store";
 
 // Rate limiting configuration
@@ -65,7 +66,7 @@ export async function POST(request: NextRequest) {
     const otp = generateOTP();
     const expiresAt = getExpiryTime();
 
-    // Store OTP in memory
+    // Store OTP in memory (for quick access)
     otpStore.set(email, { 
       otp, 
       expiresAt, 
@@ -73,6 +74,34 @@ export async function POST(request: NextRequest) {
       email,
       createdAt: Date.now()
     });
+
+    // Also store in database for persistence
+    const supabase = await createClient();
+    
+    // Invalidate any existing unverified OTPs for this email
+    await supabase
+      .from("verification_otp")
+      .update({ verified_at: new Date().toISOString() })
+      .eq("email", email)
+      .eq("otp_type", otpType)
+      .is("verified_at", null);
+
+    // Store in database
+    const { error: dbError } = await supabase
+      .from("verification_otp")
+      .insert({
+        user_id: userId || null,
+        email: email,
+        otp_code: otp,
+        otp_type: otpType,
+        expires_at: expiresAt,
+        attempts: 0,
+      });
+
+    if (dbError) {
+      console.error("Failed to store OTP in database:", dbError);
+      // Continue anyway - we still have the OTP in memory
+    }
 
     // Send email using Resend
     const resendApiKey = process.env.RESEND_API_KEY;
