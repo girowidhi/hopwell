@@ -73,17 +73,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Call the send-otp Edge Function
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const functionUrl = `${supabaseUrl}/functions/v1/send-otp`;
-
-    const response = await fetch(functionUrl, {
+    // Call the local send-otp API endpoint (more reliable)
+    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/auth/send-otp`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        email,
+        email: normalizedEmail,
+        userId: null,
         otpType: "email_verify",
       }),
     });
