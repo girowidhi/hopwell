@@ -3,6 +3,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Heart, BookOpen, Users, MessageSquare } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default function PastorDashboardPage() {
   return (
     <div className="space-y-8">

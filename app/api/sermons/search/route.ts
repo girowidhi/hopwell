@@ -1,4 +1,4 @@
-// API Route for handling sermon search with pgvector embeddings
+// API Route for handling sermon search
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 

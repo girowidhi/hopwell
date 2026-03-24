@@ -40,7 +40,15 @@ const toastVariants = cva(
   }
 )
 
-const Toast = React.forwardRef<
+type Toast = {
+  id: string
+  title?: React.ReactNode
+  description?: React.ReactNode
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}
+
+const ToastComponent = React.forwardRef<
   React.ElementRef<typeof ToastPrimitives.Root>,
   React.ComponentPropsWithoutRef<typeof ToastPrimitives.Root> &
     VariantProps<typeof toastVariants>
@@ -51,7 +59,7 @@ const Toast = React.forwardRef<
     {...props}
   />
 ))
-Toast.displayName = ToastPrimitives.Root.displayName
+ToastComponent.displayName = ToastPrimitives.Root.displayName
 
 const ToastAction = React.forwardRef<
   React.ElementRef<typeof ToastPrimitives.Action>,
@@ -112,9 +120,12 @@ ToastDescription.displayName = ToastPrimitives.Description.displayName
 
 type ToastActionElement = React.ReactElement<any>
 
+type ToastProps = React.ComponentPropsWithoutRef<typeof ToastComponent>
+
 export {
   type ToastActionElement,
-  Toast,
+  type ToastProps,
+  ToastComponent as Toast,
   ToastAction,
   ToastClose,
   ToastDescription,

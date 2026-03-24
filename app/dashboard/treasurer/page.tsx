@@ -3,6 +3,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BarChart3, TrendingUp, DollarSign, AlertCircle } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default function TreasurerDashboardPage() {
   return (
     <div className="space-y-8">

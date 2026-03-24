@@ -1,7 +1,9 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Users, CheckCircle2, Heart, Calendar } from "lucide-react";
+import { Users, CheckCircle, Heart, Calendar } from "lucide-react";
 
 export default function UsheringDashboardPage() {
   return (
@@ -16,7 +18,7 @@ export default function UsheringDashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Check-Ins Today</CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-green-600" />
+            <CheckCircle className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">432</div>

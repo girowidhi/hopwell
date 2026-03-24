@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -15,7 +17,7 @@ export default function DashboardPage() {
       } = await supabase.auth.getUser();
 
       if (!user) {
-        router.push("/auth/login");
+        router.push("/login");
         return;
       }
 

@@ -86,3 +86,31 @@ CREATE POLICY "Only admins can view audit logs" ON public.audit_logs
 
 CREATE POLICY "Service role can insert audit logs" ON public.audit_logs
   FOR INSERT WITH CHECK (true);
+
+-- =============================================
+-- OTP Verification RLS Policies
+-- =============================================
+
+-- Enable RLS on verification tables
+ALTER TABLE public.verification_otp ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.verification_attempts ENABLE ROW LEVEL SECURITY;
+
+-- Verification OTP: Allow service role to manage, users can only insert and verify their own
+CREATE POLICY "Service role can manage OTP" ON public.verification_otp
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+CREATE POLICY "Users can insert OTP" ON public.verification_otp
+  FOR INSERT WITH CHECK (auth.uid() = user_id OR auth.uid() IS NULL);
+
+CREATE POLICY "Users can update their own OTP" ON public.verification_otp
+  FOR UPDATE USING (auth.uid() = user_id);
+
+-- Verification Attempts: Allow service role to manage
+CREATE POLICY "Service role can manage attempts" ON public.verification_attempts
+  FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+CREATE POLICY "Anyone can insert attempts" ON public.verification_attempts
+  FOR INSERT WITH CHECK (true);
+
+CREATE POLICY "Anyone can update attempts" ON public.verification_attempts
+  FOR UPDATE USING (true);

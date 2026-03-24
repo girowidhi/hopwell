@@ -1,6 +1,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BarChart3, TrendingUp, DollarSign } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default function TreasurerGivingPage() {
   return (
     <div className="space-y-8">

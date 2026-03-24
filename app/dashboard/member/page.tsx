@@ -3,6 +3,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Heart, TrendingUp, Calendar, Users } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default function MemberDashboardPage() {
   return (
     <div className="space-y-8">
