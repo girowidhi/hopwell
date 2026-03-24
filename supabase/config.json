@@ -1,0 +1,6 @@
+return {
+  "api_version": "2024-08-01",
+  "name": "hopewell-chms",
+  "description": "Church Management System for Kenya",
+  "db_version": "15"
+}
