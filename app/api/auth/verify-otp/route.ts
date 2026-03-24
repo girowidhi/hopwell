@@ -19,7 +19,11 @@ interface OTPValidationResult {
 
 // Validate OTP from in-memory store
 async function validateOTPFromMemory(email: string, otp: string): Promise<OTPValidationResult> {
+  console.log("Looking for OTP in memory for email:", email);
+  console.log("Stored OTPs:", Array.from(otpStore.keys()));
+  
   const storedOtp = otpStore.get(email);
+  console.log("Found in memory:", storedOtp);
   
   if (!storedOtp || storedOtp.verified) {
     return { valid: false, source: null, error: "Invalid or expired verification code" };
@@ -45,19 +49,23 @@ async function validateOTPFromMemory(email: string, otp: string): Promise<OTPVal
 
 // Validate OTP from database (used by Supabase Edge Function)
 async function validateOTPFromDatabase(supabase: any, email: string, otp: string): Promise<OTPValidationResult> {
+  console.log("Looking for OTP in database for email:", email);
+  
   // Get the latest unverified OTP for this email
   const { data: otpRecord, error } = await supabase
     .from("verification_otp")
     .select("*, attempts")
     .eq("email", email)
-    .eq("otp_type", "email_verify")
     .is("verified_at", null)
     .gt("expires_at", new Date().toISOString())
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
 
+  console.log("Database query result:", { otpRecord, error });
+
   if (error || !otpRecord) {
+    console.log("No OTP found in database for:", email);
     return { valid: false, source: null, error: "Invalid or expired verification code" };
   }
 

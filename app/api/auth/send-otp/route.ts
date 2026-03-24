@@ -101,6 +101,8 @@ export async function POST(request: NextRequest) {
     if (dbError) {
       console.error("Failed to store OTP in database:", dbError);
       // Continue anyway - we still have the OTP in memory
+    } else {
+      console.log("OTP stored in database for:", email, "OTP:", otp);
     }
 
     // Send email using Resend
