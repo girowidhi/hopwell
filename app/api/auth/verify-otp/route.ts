@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { otpStore } from "@/lib/otp-store";
+import { createClient } from "@supabase/supabase-js";
 
-// Rate limiting configuration (in-memory for development)
+// Rate limiting configuration
 const MAX_VERIFICATION_ATTEMPTS = 5;
 const VERIFICATION_WINDOW_MINUTES = 15;
 const BLOCK_DURATION_MINUTES = 15;
@@ -10,102 +9,15 @@ const BLOCK_DURATION_MINUTES = 15;
 // In-memory rate limiting
 const verifyAttemptMap = new Map<string, { count: number; firstAttempt: number; blockedUntil?: number }>();
 
-interface OTPValidationResult {
-  valid: boolean;
-  source: 'memory' | 'database' | null;
-  error?: string;
-  attempts?: number;
-}
-
-// Validate OTP from in-memory store
-async function validateOTPFromMemory(email: string, otp: string): Promise<OTPValidationResult> {
-  console.log("Looking for OTP in memory for email:", email);
-  console.log("Stored OTPs:", Array.from(otpStore.keys()));
-  
-  const storedOtp = otpStore.get(email);
-  console.log("Found in memory:", storedOtp);
-  
-  if (!storedOtp || storedOtp.verified) {
-    return { valid: false, source: null, error: "Invalid or expired verification code" };
-  }
-
-  // Check if OTP matches
-  if (storedOtp.otp !== otp) {
-    return { 
-      valid: false, 
-      source: 'memory', 
-      error: "Invalid verification code",
-      attempts: storedOtp.attempts || 0
-    };
-  }
-
-  // Check expiry
-  if (new Date(storedOtp.expiresAt) < new Date()) {
-    return { valid: false, source: 'memory', error: "Verification code has expired" };
-  }
-
-  return { valid: true, source: 'memory' };
-}
-
-// Validate OTP from database (used by Supabase Edge Function)
-async function validateOTPFromDatabase(supabase: any, email: string, otp: string): Promise<OTPValidationResult> {
-  console.log("Looking for OTP in database for email:", email);
-  
-  // Get the latest unverified OTP for this email
-  const { data: otpRecord, error } = await supabase
-    .from("verification_otp")
-    .select("*, attempts")
-    .eq("email", email)
-    .is("verified_at", null)
-    .gt("expires_at", new Date().toISOString())
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-
-  console.log("Database query result:", { otpRecord, error });
-
-  if (error || !otpRecord) {
-    console.log("No OTP found in database for:", email);
-    return { valid: false, source: null, error: "Invalid or expired verification code" };
-  }
-
-  // Check if OTP matches
-  if (otpRecord.otp_code !== otp) {
-    // Increment attempts
-    await supabase
-      .from("verification_otp")
-      .update({ attempts: (otpRecord.attempts || 0) + 1 })
-      .eq("id", otpRecord.id);
-
-    // Check if max attempts reached
-    if ((otpRecord.attempts || 0) + 1 >= MAX_VERIFICATION_ATTEMPTS) {
-      // Invalidate the OTP
-      await supabase
-        .from("verification_otp")
-        .update({ verified_at: new Date().toISOString() })
-        .eq("id", otpRecord.id);
-
-      return { 
-        valid: false, 
-        source: 'database', 
-        error: "Too many failed attempts. Please request a new verification code."
-      };
-    }
-
-    return { 
-      valid: false, 
-      source: 'database', 
-      error: "Invalid verification code",
-      attempts: (otpRecord.attempts || 0) + 1
-    };
-  }
-
-  return { valid: true, source: 'database' };
-}
+// Initialize Supabase admin client
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 export async function POST(request: NextRequest) {
   try {
-    const { otp, userId, email, firstName, lastName, phone } = await request.json();
+    const { otp, email, firstName, lastName, phone } = await request.json();
 
     if (!otp || !email) {
       return NextResponse.json(
@@ -118,13 +30,12 @@ export async function POST(request: NextRequest) {
     const normalizedEmail = email.toLowerCase().trim();
     console.log("Verify request - email:", normalizedEmail, "OTP:", otp);
 
-    const supabase = await createClient();
-
-    // Check rate limiting (in-memory for development)
+    // Check rate limiting
     const now = Date.now();
-    const attemptKey = email;
+    const attemptKey = normalizedEmail;
     const attemptData = verifyAttemptMap.get(attemptKey);
 
+    // Check if blocked
     if (attemptData?.blockedUntil && attemptData.blockedUntil > now) {
       const retryAfter = Math.ceil((attemptData.blockedUntil - now) / 1000 / 60);
       return NextResponse.json(
@@ -136,6 +47,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check attempt count
     if (attemptData && attemptData.count >= MAX_VERIFICATION_ATTEMPTS) {
       const minutesSinceFirst = (now - attemptData.firstAttempt) / 1000 / 60;
       if (minutesSinceFirst < VERIFICATION_WINDOW_MINUTES) {
@@ -155,16 +67,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Try to validate OTP - first check memory, then database
-    let validationResult = await validateOTPFromMemory(normalizedEmail, otp);
-    
-    // If not found in memory, check database
-    if (!validationResult.valid && validationResult.source === null) {
-      validationResult = await validateOTPFromDatabase(supabase, normalizedEmail, otp);
-    }
+    // Verify the OTP against the database
+    // The custom edge function stores OTPs in the verification_otp table
+    const { data: otpRecord, error: otpError } = await supabaseAdmin
+      .from("verification_otp")
+      .select("*")
+      .eq("email", normalizedEmail)
+      .eq("otp_code", otp)
+      .eq("otp_type", "email_verify")
+      .is("verified_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
 
-    // Handle validation failure
-    if (!validationResult.valid) {
+    // Handle verification errors
+    if (otpError || !otpRecord) {
+      console.error("OTP verification error:", otpError);
+      
       // Record failed attempt
       const currentAttempt = verifyAttemptMap.get(attemptKey) || { count: 0, firstAttempt: now };
       verifyAttemptMap.set(attemptKey, { 
@@ -175,110 +95,124 @@ export async function POST(request: NextRequest) {
       // Check if max attempts reached
       const newCount = (verifyAttemptMap.get(attemptKey)?.count || 0);
       if (newCount >= MAX_VERIFICATION_ATTEMPTS) {
-        // Invalidate OTP in memory if it exists
-        const storedOtp = otpStore.get(email);
-        if (storedOtp) {
-          storedOtp.verified = true;
-        }
-        
-        // Also invalidate in database if exists
-        await supabase
-          .from("verification_otp")
-          .update({ verified_at: new Date().toISOString() })
-          .eq("email", email)
-          .eq("otp_type", "email_verify")
-          .is("verified_at", null);
-
         return NextResponse.json(
           { message: "Too many failed attempts. Please request a new verification code." },
           { status: 401 }
         );
       }
 
+      // Return 401 for invalid OTP
       return NextResponse.json(
-        { message: validationResult.error || "Invalid verification code" },
+        { message: "Invalid or expired verification code" },
         { status: 401 }
       );
-    }
-
-    // OTP is valid - mark as verified
-    if (validationResult.source === 'memory') {
-      const storedOtp = otpStore.get(email);
-      if (storedOtp) {
-        storedOtp.verified = true;
-      }
-    } else if (validationResult.source === 'database') {
-      // Mark as verified in database
-      await supabase
-        .from("verification_otp")
-        .update({ verified_at: new Date().toISOString() })
-        .eq("email", email)
-        .eq("otp_type", "email_verify")
-        .is("verified_at", null);
     }
 
     // Clear failed attempts on success
     verifyAttemptMap.delete(attemptKey);
 
-    // Now create the member profile
-    const memberUserId = userId;
+    // OTP verified successfully
+    // Mark the OTP as verified in the database
+    await supabaseAdmin
+      .from("verification_otp")
+      .update({ verified_at: new Date().toISOString() })
+      .eq("id", otpRecord.id);
 
-    if (!memberUserId) {
-      return NextResponse.json(
-        { message: "User ID not found. Please sign up again." },
-        { status: 400 }
-      );
-    }
+    console.log("OTP verified successfully for:", normalizedEmail);
 
-    // Check if member profile already exists
-    const { data: existingMember } = await supabase
-      .from("members")
-      .select("id")
-      .eq("user_id", memberUserId)
-      .single();
-
-    if (!existingMember) {
-      // Create member profile
-      const { error: memberError } = await supabase
-        .from("members")
-        .insert({
-          user_id: memberUserId,
+    // Create or get the user in Supabase Auth
+    // If the user doesn't exist, create them
+    // Note: We need to list users and filter by email since getUserByEmail doesn't exist
+    const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+    const existingUser = userList.users.find(u => u.email?.toLowerCase() === normalizedEmail);
+    
+    let userId: string;
+    
+    if (existingUser) {
+      userId = existingUser.id;
+    } else {
+      // Create a new user with the email (they'll need to set a password later or use OTP login)
+      const { data: newUser, error: createUserError } = await supabaseAdmin.auth.admin.createUser({
+        email: normalizedEmail,
+        email_confirm: true, // Email is verified via OTP
+        user_metadata: {
           first_name: firstName,
           last_name: lastName,
-          email,
-          phone,
-          status: "active",
-          membership_date: new Date().toISOString().split("T")[0],
-        });
+        }
+      });
 
-      if (memberError) {
-        console.error("Failed to create member profile:", memberError);
+      if (createUserError) {
+        console.error("Failed to create user:", createUserError);
         return NextResponse.json(
-          { message: "Failed to create member profile" },
+          { message: "Failed to create user account" },
           { status: 500 }
         );
       }
+
+      userId = newUser.user.id;
+    }
+    
+    if (userId) {
+      // Create or update member profile if needed
+      // Use createClient with service role key for admin operations
+      const supabaseAdmin = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!
+      );
+
+      // Check if member profile already exists
+      const { data: existingMember } = await supabaseAdmin
+        .from("members")
+        .select("id")
+        .eq("user_id", userId)
+        .single();
+
+      if (!existingMember && firstName) {
+        // Create member profile with the verified user's info
+        const { error: memberError } = await supabaseAdmin
+          .from("members")
+          .insert({
+            user_id: userId,
+            first_name: firstName,
+            last_name: lastName,
+            email: normalizedEmail,
+            phone: phone || null,
+            status: "active",
+            membership_date: new Date().toISOString().split("T")[0],
+          });
+
+        if (memberError) {
+          console.error("Failed to create member profile:", memberError);
+          // Don't fail the verification for this - user can still login
+        }
+      }
+
+      // Set or confirm user role as member
+      const { error: roleError } = await supabaseAdmin
+        .from("user_roles")
+        .upsert({
+          user_id: userId,
+          role: "member",
+          created_at: new Date().toISOString(),
+        }, {
+          onConflict: "user_id,role"
+        });
+
+      if (roleError) {
+        console.error("Failed to set user role:", roleError);
+      }
     }
 
-    // Create or ensure user role is set to "member"
-    const { error: roleError } = await supabase
-      .from("user_roles")
-      .upsert({
-        user_id: memberUserId,
-        role: "member",
-        created_at: new Date().toISOString(),
-      }, {
-        onConflict: "user_id,role"
-      });
-
-    if (roleError) {
-      console.error("Failed to set user role:", roleError);
-    }
-
+    // Return success - the session is now set via cookies
     return NextResponse.json(
       { 
         message: "Email verified successfully",
-        verified: true 
+        verified: true,
+        // Include session info if needed
+        user: data.user ? {
+          id: data.user.id,
+          email: data.user.email,
+        } : null
       },
       { status: 200 }
     );

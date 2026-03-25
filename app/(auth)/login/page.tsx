@@ -2,16 +2,14 @@
 
 export const dynamic = "force-dynamic";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { useToast } from "@/components/ui/use-toast";
 import {
   Dialog,
   DialogContent,
@@ -28,109 +26,150 @@ import {
   Mail,
   Lock,
   ArrowRight,
+  ArrowLeft,
   Shield,
-  Zap
+  Clock
 } from "lucide-react";
 
-interface LoginError {
-  message: string;
-  status?: number;
+// Rate limiting configuration
+const RATE_LIMIT_CONFIG = {
+  maxAttempts: 5,
+  lockoutDurationMs: 15 * 60 * 1000, // 15 minutes
+  attemptWindowMs: 15 * 60 * 1000, // 15 minutes
+};
+
+interface RateLimitState {
+  attempts: number;
+  locked: boolean;
+  lockoutEndTime: number | null;
+  lastAttemptTime: number;
 }
 
-function LoginContent() {
+export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSocialLoading, setIsSocialLoading] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     email: "",
     password: "",
   });
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [showErrorModal, setShowErrorModal] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
-  const [failedAttempts, setFailedAttempts] = useState(0);
   const [csrfToken, setCsrfToken] = useState("");
+  const [rateLimit, setRateLimit] = useState<RateLimitState>({
+    attempts: 0,
+    locked: false,
+    lockoutEndTime: null,
+    lastAttemptTime: 0,
+  });
+  const [emailTouched, setEmailTouched] = useState(false);
+  const [passwordTouched, setPasswordTouched] = useState(false);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
   
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const { toast } = useToast();
   const supabase = createClient();
 
-  // Generate CSRF token on mount
+  // Generate CSRF token on mount and check rate limit
   useEffect(() => {
     const token = crypto.randomUUID();
     setCsrfToken(token);
     localStorage.setItem("csrf_token", token);
-  }, []);
 
-  // Check for existing lockout in sessionStorage
-  useEffect(() => {
-    const lockoutTime = sessionStorage.getItem("loginLockoutUntil");
-    if (lockoutTime) {
-      const remainingTime = parseInt(lockoutTime) - Date.now();
-      if (remainingTime > 0) {
-        setLockoutUntil(parseInt(lockoutTime));
+    // Check rate limit from localStorage
+    const storedRateLimit = localStorage.getItem("login_rate_limit");
+    if (storedRateLimit) {
+      const parsed = JSON.parse(storedRateLimit);
+      const now = Date.now();
+      
+      // Check if lockout has expired
+      if (parsed.locked && parsed.lockoutEndTime && now > parsed.lockoutEndTime) {
+        setRateLimit({
+          attempts: 0,
+          locked: false,
+          lockoutEndTime: null,
+          lastAttemptTime: 0,
+        });
+        localStorage.removeItem("login_rate_limit");
       } else {
-        sessionStorage.removeItem("loginLockoutUntil");
+        setRateLimit(parsed);
       }
     }
+
+    // Check if user is already logged in
+    const checkSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          // Redirect to dashboard based on role
+          router.push("/dashboard");
+          return;
+        }
+      } catch (error) {
+        console.error("Session check error:", error);
+      } finally {
+        setIsCheckingSession(false);
+      }
+    };
+
+    checkSession();
   }, []);
 
-  // Countdown timer for lockout
+  // Update localStorage when rate limit changes
   useEffect(() => {
-    if (!lockoutUntil) return;
-
-    const interval = setInterval(() => {
-      if (lockoutUntil <= Date.now()) {
-        setLockoutUntil(null);
-        sessionStorage.removeItem("loginLockoutUntil");
-        setFailedAttempts(0);
-        clearInterval(interval);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [lockoutUntil]);
-
-  // Check for verified query parameter and show success message
-  useEffect(() => {
-    const verified = searchParams.get("verified");
-    if (verified === "true") {
-      toast({
-        title: "Email Verified!",
-        description: "Your account has been verified. Please sign in to continue.",
-        variant: "default",
-      });
-      // Remove the query parameter to prevent showing the message on refresh
-      router.replace("/login");
+    if (rateLimit.attempts > 0) {
+      localStorage.setItem("login_rate_limit", JSON.stringify(rateLimit));
     }
-  }, [searchParams, toast, router]);
+  }, [rateLimit]);
 
   const validateEmail = (email: string): boolean => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-    if (errors[name as keyof typeof errors]) {
-      setErrors({});
+  const getEmailError = (email: string): string | null => {
+    if (!email) return "Email is required";
+    if (!validateEmail(email)) return "Please enter a valid email address";
+    return null;
+  };
+
+  const getPasswordError = (password: string): string | null => {
+    if (!password) return "Password is required";
+    return null;
+  };
+
+  const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setFormData((prev) => ({ ...prev, email: value }));
+    setEmailTouched(true);
+    if (errors.email) {
+      setErrors((prev) => ({ ...prev, email: "" }));
+    }
+  };
+
+  const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setFormData((prev) => ({ ...prev, password: value }));
+    setPasswordTouched(true);
+    if (errors.password) {
+      setErrors((prev) => ({ ...prev, password: "" }));
     }
   };
 
   const handleSocialLogin = async (provider: "google" | "apple") => {
+    // Check rate limit before proceeding
+    if (rateLimit.locked) {
+      setErrorMessage("Too many failed attempts. Please wait before trying again.");
+      setShowErrorModal(true);
+      return;
+    }
+
     setIsSocialLoading(provider);
     
     try {
-      // Verify CSRF token before OAuth
       const storedToken = localStorage.getItem("csrf_token");
       if (!storedToken) {
         throw new Error("Security token expired. Please refresh the page.");
@@ -145,18 +184,38 @@ function LoginContent() {
       });
 
       if (error) {
-        if (error.message.includes("Rate limit") || error.message.includes("too many")) {
-          setErrorMessage("Too many login attempts. Please wait before trying again.");
-          setShowErrorModal(true);
-        } else {
-          throw error;
-        }
+        throw error;
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to sign in with " + provider);
+      setErrorMessage(error instanceof Error ? error.message : `Failed to sign in with ${provider}`);
       setShowErrorModal(true);
     } finally {
       setIsSocialLoading(null);
+    }
+  };
+
+  const updateRateLimit = (success: boolean) => {
+    const now = Date.now();
+    
+    if (success) {
+      // Reset rate limit on successful login
+      setRateLimit({
+        attempts: 0,
+        locked: false,
+        lockoutEndTime: null,
+        lastAttemptTime: 0,
+      });
+      localStorage.removeItem("login_rate_limit");
+    } else {
+      const newAttempts = rateLimit.attempts + 1;
+      const isLocked = newAttempts >= RATE_LIMIT_CONFIG.maxAttempts;
+      
+      setRateLimit({
+        attempts: newAttempts,
+        locked: isLocked,
+        lockoutEndTime: isLocked ? now + RATE_LIMIT_CONFIG.lockoutDurationMs : null,
+        lastAttemptTime: now,
+      });
     }
   };
 
@@ -171,25 +230,26 @@ function LoginContent() {
       return;
     }
 
-    // Check for lockout
-    if (lockoutUntil && lockoutUntil > Date.now()) {
-      setErrorMessage("Account is temporarily locked. Please try again later.");
+    // Check rate limit before processing
+    if (rateLimit.locked && rateLimit.lockoutEndTime) {
+      const remainingTime = Math.ceil((rateLimit.lockoutEndTime - Date.now()) / 1000 / 60);
+      setErrorMessage(`Too many failed attempts. Please try again in ${remainingTime} minutes.`);
       setShowErrorModal(true);
       return;
     }
 
     setErrors({});
 
-    const newErrors: { email?: string; password?: string } = {};
+    const newErrors: Record<string, string> = {};
     
-    if (!formData.email) {
-      newErrors.email = "Email is required";
-    } else if (!validateEmail(formData.email)) {
-      newErrors.email = "Please enter a valid email address";
+    const emailError = getEmailError(formData.email);
+    if (emailError) {
+      newErrors.email = emailError;
     }
-
-    if (!formData.password) {
-      newErrors.password = "Password is required";
+    
+    const passwordError = getPasswordError(formData.password);
+    if (passwordError) {
+      newErrors.password = passwordError;
     }
 
     if (Object.keys(newErrors).length > 0) {
@@ -201,61 +261,78 @@ function LoginContent() {
     setIsLoading(true);
 
     try {
+      // Sign in with Supabase Auth
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: formData.email,
+        email: formData.email.toLowerCase().trim(),
         password: formData.password,
       });
 
       if (error) {
+        updateRateLimit(false);
+        
         if (error.message.includes("Invalid login credentials")) {
-          const newAttempts = failedAttempts + 1;
-          setFailedAttempts(newAttempts);
-          
-          if (newAttempts >= 5) {
-            const lockoutTime = Date.now() + 5 * 60 * 1000;
-            setLockoutUntil(lockoutTime);
-            sessionStorage.setItem("loginLockoutUntil", lockoutTime.toString());
-            setErrorMessage("Too many failed attempts. Your account is locked for 5 minutes.");
-            setShowErrorModal(true);
-            setIsLoading(false);
-            setIsSubmitting(false);
-            return;
-          }
-
-          setErrorMessage(`Invalid email or password. ${5 - newAttempts} attempts remaining.`);
+          setErrorMessage("Invalid email or password. Please check your credentials and try again.");
           setShowErrorModal(true);
           throw new Error("Invalid credentials");
         }
-
+        
         if (error.message.includes("Email not confirmed")) {
           setErrorMessage("Please verify your email address before signing in.");
           setShowErrorModal(true);
-          localStorage.setItem("pendingVerificationEmail", formData.email);
           throw new Error("Email not confirmed");
         }
 
+        if (error.message.includes("rate limit") || error.message.includes("too many requests")) {
+          setErrorMessage("Too many login attempts. Please wait a moment and try again.");
+          setShowErrorModal(true);
+          throw new Error("Rate limited");
+        }
+
+        setErrorMessage(error.message || "An unexpected error occurred. Please try again.");
+        setShowErrorModal(true);
         throw error;
       }
 
-      setFailedAttempts(0);
-      sessionStorage.removeItem("loginLockoutUntil");
-      localStorage.removeItem("pendingVerificationEmail");
-      
-      // Rotate CSRF token after successful login
-      const newToken = crypto.randomUUID();
-      setCsrfToken(newToken);
-      localStorage.setItem("csrf_token", newToken);
+      // Update rate limit on success
+      updateRateLimit(true);
 
+      // Get user role from public.users table
+      if (data.user) {
+        const { data: userData, error: userError } = await supabase
+          .from("users")
+          .select("role, status")
+          .eq("auth_user_id", data.user.id)
+          .single();
+
+        if (userError) {
+          console.error("Error fetching user role:", userError);
+        }
+
+        // Store user info in localStorage
+        localStorage.setItem("user_role", userData?.role || "member");
+        localStorage.setItem("user_status", userData?.status || "active");
+        
+        // Set session info
+        localStorage.setItem("session_expires_at", (Date.now() + 3600000).toString()); // 1 hour
+      }
+
+      // Show success message
+      setSuccessMessage("Login successful! Redirecting to dashboard...");
       setShowSuccessModal(true);
-      
+
+      // Redirect after a short delay
       setTimeout(() => {
         router.push("/dashboard");
       }, 1500);
+
     } catch (error) {
-      if ((error as LoginError).message !== "Invalid credentials" && 
-          (error as LoginError).message !== "Email not confirmed") {
+      if ((error as Error).message !== "Invalid credentials" && 
+          (error as Error).message !== "Email not confirmed" &&
+          (error as Error).message !== "Rate limited") {
         setErrorMessage(error instanceof Error ? error.message : "An unexpected error occurred");
-        setShowErrorModal(true);
+        if (!showErrorModal) {
+          setShowErrorModal(true);
+        }
       }
     } finally {
       setIsLoading(false);
@@ -263,20 +340,46 @@ function LoginContent() {
     }
   };
 
-  const getLockoutRemainingTime = () => {
-    if (!lockoutUntil) return 0;
-    return Math.ceil((lockoutUntil - Date.now()) / 1000);
+  const handleForgotPassword = () => {
+    router.push("/forgot-password");
   };
+
+  // Get remaining lockout time
+  const getLockoutRemainingTime = (): string => {
+    if (!rateLimit.lockoutEndTime) return "";
+    const remaining = Math.max(0, rateLimit.lockoutEndTime - Date.now());
+    const minutes = Math.floor(remaining / 60000);
+    const seconds = Math.floor((remaining % 60000) / 1000);
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  };
+
+  // Show loading while checking session
+  if (isCheckingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0A0F1E] via-[#0F1525] to-[#05070F] relative overflow-hidden">
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute -top-40 -right-40 w-80 h-80 bg-[#C9A87C]/5 rounded-full blur-3xl animate-pulse" />
+          <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-[#C9A87C]/5 rounded-full blur-3xl animate-pulse" style={{ animationDelay: "1s" }} />
+        </div>
+        <div className="relative z-10 flex flex-col items-center gap-4">
+          <Loader className="h-8 w-8 animate-spin text-[#C9A87C]" />
+          <p className="text-gray-400 text-sm">Checking session...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
       <Card className="bg-[#0F1525]/80 backdrop-blur-sm border-[#C9A87C]/20 shadow-xl shadow-black/20 animate-in fade-in slide-in-from-bottom-4 duration-500">
         <CardHeader className="space-y-2 text-center">
           <CardTitle className="text-2xl font-bold text-white">Welcome Back</CardTitle>
-          <CardDescription className="text-gray-400">Sign in to your Hopewell ChMS account</CardDescription>
+          <CardDescription className="text-gray-400">Sign in to access your Hopewell ChMS account</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Login Form */}
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* Email Field */}
             <div className="space-y-2">
               <Label htmlFor="email" className="text-gray-300 flex items-center gap-2">
                 <Mail className="h-4 w-4 text-[#C9A87C]" />
@@ -288,28 +391,41 @@ function LoginContent() {
                 type="email"
                 placeholder="you@example.com"
                 value={formData.email}
-                onChange={handleChange}
+                onChange={handleEmailChange}
+                onBlur={() => setEmailTouched(true)}
                 className="bg-[#0A0F1E]/50 border-[#C9A87C]/20 text-white placeholder:text-gray-500 focus:border-[#C9A87C] focus:ring-[#C9A87C]/20 transition-all duration-200"
                 style={{ 
                   boxShadow: errors.email ? "0 0 0 1px #ef4444" : "none"
                 }}
                 aria-invalid={!!errors.email}
-                aria-describedby={errors.email ? "email-error" : undefined}
-                disabled={isLoading || !!lockoutUntil}
+                aria-describedby={errors.email ? "email-error" : "email-hint"}
+                disabled={isLoading || rateLimit.locked}
                 autoComplete="email"
               />
+              {emailTouched && !errors.email && formData.email && (
+                validateEmail(formData.email) && (
+                  <p className="text-xs text-green-400 flex items-center gap-1 animate-in slide-in-from-top-1">
+                    <CheckCircle className="h-3 w-3" />
+                    Valid email
+                  </p>
+                )
+              )}
               {errors.email && (
                 <p 
                   id="email-error" 
-                  className="text-sm text-red-400 flex items-center gap-1 animate-in slide-in-from-top-1"
+                  className="text-sm text-red-400 flex items-center gap-1"
                   role="alert"
                 >
                   <AlertCircle className="h-4 w-4" />
                   {errors.email}
                 </p>
               )}
+              <p id="email-hint" className="text-xs text-gray-500">
+                Enter the email address associated with your account
+              </p>
             </div>
 
+            {/* Password Field */}
             <div className="space-y-2">
               <Label htmlFor="password" className="text-gray-300 flex items-center gap-2">
                 <Lock className="h-4 w-4 text-[#C9A87C]" />
@@ -322,14 +438,15 @@ function LoginContent() {
                   type={showPassword ? "text" : "password"}
                   placeholder="Enter your password"
                   value={formData.password}
-                  onChange={handleChange}
+                  onChange={handlePasswordChange}
+                  onBlur={() => setPasswordTouched(true)}
                   className="bg-[#0A0F1E]/50 border-[#C9A87C]/20 text-white placeholder:text-gray-500 pr-10 focus:border-[#C9A87C] focus:ring-[#C9A87C]/20 transition-all duration-200"
                   style={{ 
                     boxShadow: errors.password ? "0 0 0 1px #ef4444" : "none"
                   }}
                   aria-invalid={!!errors.password}
                   aria-describedby={errors.password ? "password-error" : undefined}
-                  disabled={isLoading || !!lockoutUntil}
+                  disabled={isLoading || rateLimit.locked}
                   autoComplete="current-password"
                 />
                 <button
@@ -344,7 +461,7 @@ function LoginContent() {
               {errors.password && (
                 <p 
                   id="password-error" 
-                  className="text-sm text-red-400 flex items-center gap-1 animate-in slide-in-from-top-1"
+                  className="text-sm text-red-400 flex items-center gap-1"
                   role="alert"
                 >
                   <AlertCircle className="h-4 w-4" />
@@ -353,38 +470,51 @@ function LoginContent() {
               )}
             </div>
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="remember"
-                  checked={rememberMe}
-                  onCheckedChange={(checked) => setRememberMe(checked as boolean)}
-                  disabled={isLoading || !!lockoutUntil}
-                  className="border-[#C9A87C]/30 data-[state=checked]:bg-[#C9A87C] data-[state=checked]:border-[#C9A87C]"
-                />
-                <label
-                  htmlFor="remember"
-                  className="text-sm text-gray-400 cursor-pointer leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                >
-                  Remember me
-                </label>
-              </div>
+            {/* Forgot Password Link */}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                className="text-sm text-[#C9A87C] hover:text-[#B8956A] transition-colors flex items-center gap-1"
+              >
+                <Shield className="h-3 w-3" />
+                Forgot password?
+              </button>
             </div>
 
+            {/* Rate Limit Warning */}
+            {rateLimit.locked && rateLimit.lockoutEndTime && (
+              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg animate-in slide-in-from-top-2">
+                <div className="flex items-center gap-2 text-red-400">
+                  <Clock className="h-4 w-4" />
+                  <span className="text-sm font-medium">Account temporarily locked</span>
+                </div>
+                <p className="text-xs text-red-300/70 mt-1">
+                  Too many failed attempts. Try again in {getLockoutRemainingTime()}
+                </p>
+              </div>
+            )}
+
+            {/* Attempts Remaining Warning */}
+            {!rateLimit.locked && rateLimit.attempts > 0 && rateLimit.attempts < RATE_LIMIT_CONFIG.maxAttempts && (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg animate-in slide-in-from-top-2">
+                <div className="flex items-center gap-2 text-amber-400">
+                  <AlertCircle className="h-4 w-4" />
+                  <span className="text-sm">{RATE_LIMIT_CONFIG.maxAttempts - rateLimit.attempts} attempts remaining</span>
+                </div>
+              </div>
+            )}
+
+            {/* Submit Button */}
             <Button 
               type="submit" 
-              className="w-full bg-[#C9A87C] hover:bg-[#B8956A] text-[#0A0F1E] font-semibold transition-all duration-200 hover:shadow-lg hover:shadow-[#C9A87C]/20" 
-              disabled={isLoading || isSubmitting || !!lockoutUntil}
+              className="w-full bg-[#C9A87C] hover:bg-[#B8956A] text-[#0A0F1E] font-semibold transition-all duration-200 hover:shadow-lg hover:shadow-[#C9A87C]/20"
+              disabled={isLoading || isSubmitting || rateLimit.locked}
             >
               {isLoading ? (
                 <>
                   <Loader className="mr-2 h-4 w-4 animate-spin" />
-                  Signing in...
-                </>
-              ) : lockoutUntil ? (
-                <>
-                  <Zap className="mr-2 h-4 w-4" />
-                  Locked ({getLockoutRemainingTime()}s)
+                  Signing In...
                 </>
               ) : (
                 <>
@@ -395,19 +525,7 @@ function LoginContent() {
             </Button>
           </form>
 
-          {/* Lockout Notice */}
-          {lockoutUntil && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg animate-in slide-in-from-top-1">
-              <div className="flex items-center gap-2 text-sm text-red-400">
-                <Shield className="h-4 w-4" />
-                <span>
-                  Too many failed attempts. Try again in {getLockoutRemainingTime()} seconds.
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Social Login at Bottom */}
+          {/* Social Login */}
           <div className="space-y-3">
             <div className="relative">
               <div className="absolute inset-0 flex items-center">
@@ -422,7 +540,7 @@ function LoginContent() {
               <Button
                 variant="outline"
                 onClick={() => handleSocialLogin("google")}
-                disabled={!!isSocialLoading || !!lockoutUntil}
+                disabled={!!isSocialLoading || rateLimit.locked}
                 className="bg-[#0A0F1E]/50 border-[#C9A87C]/20 text-white hover:bg-[#C9A87C]/10 hover:border-[#C9A87C]/40 hover:text-[#C9A87C] transition-all duration-200"
               >
                 {isSocialLoading === "google" ? (
@@ -440,7 +558,7 @@ function LoginContent() {
               <Button
                 variant="outline"
                 onClick={() => handleSocialLogin("apple")}
-                disabled={!!isSocialLoading || !!lockoutUntil}
+                disabled={!!isSocialLoading || rateLimit.locked}
                 className="bg-[#0A0F1E]/50 border-[#C9A87C]/20 text-white hover:bg-[#C9A87C]/10 hover:border-[#C9A87C]/40 hover:text-[#C9A87C] transition-all duration-200"
               >
                 {isSocialLoading === "apple" ? (
@@ -455,40 +573,16 @@ function LoginContent() {
             </div>
           </div>
 
-          {/* Navigation Links */}
-          <div className="space-y-2 text-center text-sm pt-4 border-t border-[#C9A87C]/10">
-            <div>
-              Don't have an account?{" "}
-              <Link href="/signup" className="text-[#C9A87C] hover:text-[#B8956A] font-medium transition-colors">
-                Sign up
-              </Link>
-            </div>
-            <div>
-              <Link href="/forgot-password" className="text-gray-400 hover:text-[#C9A87C] transition-colors">
-                Forgot password?
-              </Link>
-            </div>
+          {/* Navigation Link */}
+          <div className="text-center text-sm pt-4 border-t border-[#C9A87C]/10">
+            <span className="text-gray-400">Don't have an account? </span>
+            <Link href="/signup" className="text-[#C9A87C] hover:text-[#B8956A] font-medium transition-colors flex items-center justify-center gap-1">
+              <ArrowLeft className="h-4 w-4" />
+              Sign up
+            </Link>
           </div>
         </CardContent>
       </Card>
-
-      {/* Success Modal */}
-      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
-        <DialogContent className="sm:max-w-md bg-[#0F1525] border-[#C9A87C]/20 animate-in zoom-in-95 duration-300">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-green-400">
-              <CheckCircle className="h-5 w-5" />
-              Welcome Back!
-            </DialogTitle>
-            <DialogDescription className="text-gray-400 text-center pt-2">
-              You have successfully signed in
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#C9A87C]"></div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Error Modal */}
       <Dialog open={showErrorModal} onOpenChange={setShowErrorModal}>
@@ -502,7 +596,7 @@ function LoginContent() {
           <div className="py-4">
             <p className="text-gray-300 text-center">{errorMessage}</p>
           </div>
-          <div className="flex flex-col sm:flex-row gap-2 justify-center">
+          <div className="flex justify-center">
             <Button 
               onClick={() => setShowErrorModal(false)} 
               variant="outline"
@@ -510,31 +604,30 @@ function LoginContent() {
             >
               Try Again
             </Button>
-            {errorMessage.includes("verify") && (
-              <Link href="/verify" className="w-full sm:w-auto">
-                <Button className="w-full bg-[#C9A87C] hover:bg-[#B8956A] text-[#0A0F1E]">
-                  <CheckCircle className="mr-2 h-4 w-4" />
-                  Verify Email
-                </Button>
-              </Link>
-            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Success Modal */}
+      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
+        <DialogContent className="sm:max-w-md bg-[#0F1525] border-green-500/20 animate-in zoom-in-95 duration-300">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-green-400">
+              <CheckCircle className="h-5 w-5" />
+              Success
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-gray-300 text-center">{successMessage}</p>
+          </div>
+          <div className="flex justify-center">
+            <div className="flex items-center gap-2 text-[#C9A87C]">
+              <Loader className="h-4 w-4 animate-spin" />
+              <span className="text-sm">Redirecting...</span>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
     </>
-  );
-}
-
-export default function LoginPage() {
-  return (
-    <Suspense fallback={
-      <Card className="bg-[#0F1525]/80 backdrop-blur-sm border-[#C9A87C]/20">
-        <CardHeader className="space-y-2 text-center">
-          <CardTitle className="text-white">Loading...</CardTitle>
-        </CardHeader>
-      </Card>
-    }>
-      <LoginContent />
-    </Suspense>
   );
 }

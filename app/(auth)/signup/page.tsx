@@ -246,7 +246,7 @@ export default function SignUpPage() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          email: formData.email,
+          email: formData.email.toLowerCase().trim(),
           userId: data.user?.id,
           otpType: "email_verify",
         }),

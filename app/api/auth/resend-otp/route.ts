@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
 
 // Rate limiting configuration
 const RESEND_WINDOW_MINUTES = 60;
 const MAX_RESEND_REQUESTS = 3;
-const RESEND_COOLDOWN_SECONDS = 180; // 3 minutes
+const RESEND_COOLDOWN_SECONDS = 60; // 1 minute cooldown
+
+// In-memory rate limiting
+const rateLimitMap = new Map<string, { count: number; firstRequest: number; lastRequestTime: number }>();
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,48 +23,28 @@ export async function POST(request: NextRequest) {
     const normalizedEmail = email.toLowerCase().trim();
     console.log("Resend OTP for:", normalizedEmail);
 
-    const supabase = await createClient();
+    // Check rate limiting
+    const now = Date.now();
+    const rateLimitKey = normalizedEmail;
+    const existingLimit = rateLimitMap.get(rateLimitKey);
 
-    // Check rate limiting for resend requests
-    const { data: recentRequests } = await supabase
-      .from("verification_otp")
-      .select("created_at")
-      .eq("email", email)
-      .eq("otp_type", "email_verify")
-      .order("created_at", { ascending: false })
-      .limit(MAX_RESEND_REQUESTS);
+    // Check cooldown (1 minute between resend requests)
+    if (existingLimit) {
+      const secondsSinceLastRequest = (now - existingLimit.lastRequestTime) / 1000;
+      if (secondsSinceLastRequest < RESEND_COOLDOWN_SECONDS) {
+        const retryAfter = Math.ceil(RESEND_COOLDOWN_SECONDS - secondsSinceLastRequest);
+        return NextResponse.json(
+          { 
+            message: "Please wait before requesting a new code",
+            retryAfter
+          },
+          { status: 429, headers: { "Retry-After": String(retryAfter) } }
+        );
+      }
 
-    if (recentRequests && recentRequests.length >= MAX_RESEND_REQUESTS) {
-      const oldestRequest = new Date(recentRequests[MAX_RESEND_REQUESTS - 1].created_at);
-      const now = new Date();
-      const minutesSinceOldest = (now.getTime() - oldestRequest.getTime()) / 1000 / 60;
-
-      if (minutesSinceOldest < RESEND_WINDOW_MINUTES) {
-        const { data: lastRequest } = await supabase
-          .from("verification_otp")
-          .select("created_at")
-          .eq("email", email)
-          .eq("otp_type", "email_verify")
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .single();
-
-        if (lastRequest) {
-          const lastRequestTime = new Date(lastRequest.created_at);
-          const secondsSinceLastRequest = (now.getTime() - lastRequestTime.getTime()) / 1000;
-
-          if (secondsSinceLastRequest < RESEND_COOLDOWN_SECONDS) {
-            const retryAfter = Math.ceil(RESEND_COOLDOWN_SECONDS - secondsSinceLastRequest);
-            return NextResponse.json(
-              { 
-                message: "Please wait before requesting a new code",
-                retryAfter 
-              },
-              { status: 429 }
-            );
-          }
-        }
-
+      // Check if within window and exceeded max requests
+      const minutesSinceFirst = (now - existingLimit.firstRequest) / 1000 / 60;
+      if (minutesSinceFirst < RESEND_WINDOW_MINUTES && existingLimit.count >= MAX_RESEND_REQUESTS) {
         return NextResponse.json(
           { 
             message: "Too many resend requests. Please try again later.",
@@ -73,35 +55,51 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Call the local send-otp API endpoint (more reliable)
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/auth/send-otp`, {
+    // Update rate limit
+    if (!existingLimit || (now - existingLimit.firstRequest) / 1000 / 60 >= RESEND_WINDOW_MINUTES) {
+      rateLimitMap.set(rateLimitKey, { count: 1, firstRequest: now, lastRequestTime: now });
+    } else {
+      rateLimitMap.set(rateLimitKey, { 
+        count: existingLimit.count + 1, 
+        firstRequest: existingLimit.firstRequest,
+        lastRequestTime: now
+      });
+    }
+
+    // Call the custom Edge Function to resend 6-digit OTP via email
+    const edgeFunctionUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/send-otp`;
+    
+    const edgeFunctionResponse = await fetch(edgeFunctionUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
       },
       body: JSON.stringify({
         email: normalizedEmail,
-        userId: null,
         otpType: "email_verify",
       }),
     });
 
-    const result = await response.json();
+    const result = await edgeFunctionResponse.json();
 
-    if (!response.ok) {
-      // Handle rate limiting from Edge Function
-      if (response.status === 429) {
+    if (!edgeFunctionResponse.ok) {
+      console.error("Edge function error:", result);
+      
+      if (edgeFunctionResponse.status === 429) {
         return NextResponse.json(
-          { message: result.error || "Too many requests" },
+          { message: result.error || "Too many requests. Please try again later.", retryAfter: result.retryAfter },
           { status: 429, headers: { "Retry-After": String(result.retryAfter || 60) } }
         );
       }
-
+      
       return NextResponse.json(
-        { message: result.error || "Failed to send verification code" },
-        { status: response.status }
+        { message: result.error || "Failed to resend verification code" },
+        { status: 500 }
       );
     }
+
+    console.log("OTP resent successfully via Edge Function to:", normalizedEmail);
 
     return NextResponse.json(
       { message: "Verification code sent successfully" },
